@@ -52,7 +52,7 @@ async def get_api() -> API:
     return _api
 
 
-MAX_VIDEO_BYTES = 18 * 1024 * 1024  # Telegram принимает до 20 МБ при отправке по URL
+MAX_VIDEO_BYTES = 45 * 1024 * 1024  # Telegram принимает до 50 МБ при загрузке файлом
 
 
 def _pick_variant(video):

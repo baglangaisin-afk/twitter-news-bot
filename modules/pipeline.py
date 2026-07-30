@@ -1,9 +1,9 @@
 """
 pipeline.py — оркестрация всего процесса сбора и обработки твитов.
 
-Аккаунты обходятся группами: собрали группу — отсортировали по лайкам — сразу отправили,
-и только потом взялись за следующую. Так первые посты уходят через пару минут,
-а не после обхода всего списка.
+Аккаунты обходятся группами: собрали группу — отсортировали по разгону — свернули
+в сюжеты — сразу отправили, и только потом взялись за следующую. Так первые посты
+уходят через пару минут, а не после обхода всего списка.
 """
 import os
 import json
@@ -15,6 +15,7 @@ from telegram import Bot
 
 from modules.scraper import get_recent_tweets
 from modules.ranker import rank_candidates
+from modules.cluster import group_similar
 from modules.media_filter import has_valid_media
 from modules.dedup import is_already_sent, mark_as_sent
 from modules.ai_rewrite import rewrite_tweet
@@ -30,44 +31,55 @@ def _load_accounts() -> list[str]:
         return json.load(f)
 
 
-async def _process_tweet(bot: Bot, chat_id: str, tweet: dict, delay: float) -> bool:
+async def _process_cluster(bot: Bot, chat_id: str, cluster: list[dict], delay: float) -> bool:
     """
-    Прогоняет один твит через фильтры и отправляет.
+    Отправляет один пост на сюжет.
+
+    Берёт самый быстро растущий твит группы с пригодным медиа, а остальные версии
+    помечает отправленными — иначе та же новость от другого издания всплывёт
+    следующим прогоном.
     Возвращает True, если пост ушёл в канал.
     """
-    tweet_id = tweet["tweet_id"]
+    # Если любую версию сюжета уже отправляли — новость освещена, пропускаем целиком
+    for tweet in cluster:
+        if await asyncio.to_thread(is_already_sent, tweet["tweet_id"]):
+            logger.info(f"Сюжет: пропуск — твит {tweet['tweet_id']} уже отправлялся")
+            return False
 
-    if not has_valid_media(tweet):
-        logger.info(f"Tweet {tweet_id}: пропуск — нет валидного медиа")
-        return False
-
-    if await asyncio.to_thread(is_already_sent, tweet_id):
-        logger.info(f"Tweet {tweet_id}: пропуск — уже отправлялся")
+    chosen = next((t for t in cluster if has_valid_media(t)), None)
+    if chosen is None:
+        logger.info(f"Сюжет {cluster[0]['tweet_id']}: пропуск — ни у одной версии нет медиа")
         return False
 
     await asyncio.sleep(delay)
 
-    rewritten = await asyncio.to_thread(rewrite_tweet, tweet["text"])
+    rewritten = await asyncio.to_thread(rewrite_tweet, chosen["text"])
     if rewritten is None:
-        logger.info(f"Tweet {tweet_id}: пропуск — SKIP или ошибка AI")
+        logger.info(f"Сюжет {chosen['tweet_id']}: пропуск — SKIP или ошибка AI")
         return False
 
     success = await send_post(
         bot=bot,
         chat_id=chat_id,
         caption=rewritten,
-        media_url=tweet["media_urls"][0],
-        media_type=tweet["media_type"],
-        source_url=tweet["url"],
+        media_url=chosen["media_urls"][0],
+        media_type=chosen["media_type"],
+        source_url=chosen["url"],
     )
 
     if not success:
-        logger.error(f"Tweet {tweet_id}: отправка не удалась")
+        logger.error(f"Сюжет {chosen['tweet_id']}: отправка не удалась")
         return False
 
     sent_at = datetime.now(timezone.utc).isoformat()
-    await asyncio.to_thread(mark_as_sent, tweet_id, tweet["account"], sent_at)
-    logger.info(f"Tweet {tweet_id}: отправлен успешно")
+    for tweet in cluster:
+        await asyncio.to_thread(mark_as_sent, tweet["tweet_id"], tweet["account"], sent_at)
+
+    extra = len(cluster) - 1
+    logger.info(
+        f"Сюжет {chosen['tweet_id']}: отправлен успешно"
+        + (f", схлопнуто версий: {extra}" if extra else "")
+    )
     return True
 
 
@@ -82,6 +94,7 @@ async def run_pipeline(bot: Bot) -> int:
     max_age_hours = float(os.environ.get("MAX_AGE_HOURS", 48))
     max_posts = int(os.environ.get("MAX_POSTS_PER_RUN", 30))
     batch_size = int(os.environ.get("ACCOUNTS_PER_BATCH", 10))
+    similarity = float(os.environ.get("CLUSTER_THRESHOLD", 0.45))
     delay = float(os.environ.get("REQUEST_DELAY_SECONDS", 5))
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -102,23 +115,26 @@ async def run_pipeline(bot: Bot) -> int:
             batch_tweets.extend(await get_recent_tweets(handle, tweets_per_account))
             await asyncio.sleep(delay)
 
-        # 2. Отбор внутри группы: от популярных к менее популярным
+        # 2. Отбор внутри группы: по убыванию скорости набора лайков
         candidates = rank_candidates(batch_tweets, min_likes, max_age_hours)
+
+        # 3. Свёртка версий одной новости в сюжеты
+        clusters = group_similar(candidates, similarity)
         logger.info(
             f"Pipeline: группа {batch_no} — собрано {len(batch_tweets)} твитов, "
-            f"кандидатов {len(candidates)}"
+            f"кандидатов {len(candidates)}, сюжетов {len(clusters)}"
         )
 
-        # 3. Отправка сразу, не дожидаясь остальных групп
-        for tweet in candidates:
+        # 4. Отправка сразу, не дожидаясь остальных групп
+        for cluster in clusters:
             if sent_count >= max_posts:
                 break
             try:
-                if await _process_tweet(bot, chat_id, tweet, delay):
+                if await _process_cluster(bot, chat_id, cluster, delay):
                     sent_count += 1
             except Exception as e:
                 logger.error(
-                    f"Pipeline: ошибка при обработке твита {tweet.get('tweet_id')} — {e}"
+                    f"Pipeline: ошибка при обработке сюжета {cluster[0].get('tweet_id')} — {e}"
                 )
                 continue
 
