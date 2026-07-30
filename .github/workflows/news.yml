@@ -14,6 +14,11 @@ on:
     - cron: "0 19 * * *"
   # Позволяет запустить сбор вручную кнопкой на вкладке Actions
   workflow_dispatch:
+    inputs:
+      max_posts:
+        description: "Сколько постов отправить максимум (для пробного прогона)"
+        required: false
+        default: "30"
 
 # Два прогона одновременно не нужны: они бы дублировали запросы к X
 concurrency:
@@ -51,7 +56,7 @@ jobs:
           TWEETS_PER_ACCOUNT: "10"
           MIN_LIKES: "5000"
           MAX_AGE_HOURS: "48"
-          MAX_POSTS_PER_RUN: "30"
+          MAX_POSTS_PER_RUN: ${{ inputs.max_posts || '30' }}
           ACCOUNTS_PER_BATCH: "10"
           REQUEST_DELAY_SECONDS: "5"
         run: python run_once.py
