@@ -31,6 +31,12 @@ async def get_api() -> API:
             await api.pool.add_account_cookies(username, cookies)
             logger.info(f"twscrape: аккаунт @{username} добавлен по кукам")
     else:
+        if not os.environ.get("TWITTER_PASSWORD"):
+            raise RuntimeError(
+                "Нет ни TWITTER_COOKIES, ни TWITTER_PASSWORD. "
+                "Обнови куки: войди в x.com в браузере, скопируй auth_token и ct0 "
+                "из DevTools и положи в секрет TWITTER_COOKIES."
+            )
         if account is None:
             await api.pool.add_account(
                 username,
