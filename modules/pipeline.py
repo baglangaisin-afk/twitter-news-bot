@@ -26,9 +26,25 @@ logger = logging.getLogger(__name__)
 ACCOUNTS_PATH = "config/accounts.json"
 
 
-def _load_accounts() -> list[str]:
+def _load_accounts() -> list[tuple[str, int | None]]:
+    """
+    Читает список аккаунтов. Элемент — либо строка-хендл, либо объект со своим
+    порогом лайков: {"handle": "soompi", "min_likes": 500}.
+
+    Свой порог нужен там, где вовлечённость аккаунта заметно ниже средней: у моды
+    и K-pop медиана лайков в десятки раз меньше, чем у PopBase, и общий порог
+    выключал их целиком. None означает «взять общий MIN_LIKES».
+    """
     with open(ACCOUNTS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        raw = json.load(f)
+
+    accounts: list[tuple[str, int | None]] = []
+    for item in raw:
+        if isinstance(item, str):
+            accounts.append((item, None))
+        else:
+            accounts.append((item["handle"], item.get("min_likes")))
+    return accounts
 
 
 async def _process_cluster(bot: Bot, chat_id: str, cluster: list[dict], delay: float) -> bool:
@@ -107,22 +123,30 @@ async def run_pipeline(bot: Bot) -> int:
 
         batch = accounts[start : start + batch_size]
         batch_no = start // batch_size + 1
-        logger.info(f"Pipeline: группа {batch_no} — аккаунты {', '.join(batch)}")
+        logger.info(
+            f"Pipeline: группа {batch_no} — аккаунты {', '.join(h for h, _ in batch)}"
+        )
 
-        # 1. Сбор твитов по аккаунтам группы
+        # 1. Сбор твитов по аккаунтам группы, порог лайков — свой у каждого
         batch_tweets: list[dict] = []
-        for handle in batch:
-            batch_tweets.extend(await get_recent_tweets(handle, tweets_per_account))
+        collected = 0
+        for handle, account_min in batch:
+            tweets = await get_recent_tweets(handle, tweets_per_account)
+            collected += len(tweets)
+            threshold = min_likes if account_min is None else account_min
+            batch_tweets.extend(t for t in tweets if (t.get("likes") or 0) >= threshold)
             await asyncio.sleep(delay)
 
         # 2. Отбор внутри группы: по убыванию скорости набора лайков
-        candidates = rank_candidates(batch_tweets, min_likes, max_age_hours)
+        # (порог лайков уже применён поаккаунтно, поэтому здесь 0)
+        candidates = rank_candidates(batch_tweets, 0, max_age_hours)
 
         # 3. Свёртка версий одной новости в сюжеты
         clusters = group_similar(candidates, similarity)
         logger.info(
-            f"Pipeline: группа {batch_no} — собрано {len(batch_tweets)} твитов, "
-            f"кандидатов {len(candidates)}, сюжетов {len(clusters)}"
+            f"Pipeline: группа {batch_no} — собрано {collected} твитов, "
+            f"прошли порог лайков {len(batch_tweets)}, кандидатов {len(candidates)}, "
+            f"сюжетов {len(clusters)}"
         )
 
         # 4. Отправка сразу, не дожидаясь остальных групп
