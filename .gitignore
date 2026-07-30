@@ -1,0 +1,11 @@
+.env
+credentials.json
+cookies.json
+accounts.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.claude/
+*.log

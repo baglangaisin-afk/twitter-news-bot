@@ -1,0 +1,61 @@
+name: Сбор новостей
+
+on:
+  # Расписание задаётся в UTC. Астана — UTC+5 без перехода на летнее время.
+  #   12:00 → 07:00   14:00 → 09:00   16:30 → 11:30   19:00 → 14:00
+  #   21:00 → 16:00   23:00 → 18:00   00:00 → 19:00
+  schedule:
+    - cron: "0 7 * * *"
+    - cron: "0 9 * * *"
+    - cron: "30 11 * * *"
+    - cron: "0 14 * * *"
+    - cron: "0 16 * * *"
+    - cron: "0 18 * * *"
+    - cron: "0 19 * * *"
+  # Позволяет запустить сбор вручную кнопкой на вкладке Actions
+  workflow_dispatch:
+
+# Два прогона одновременно не нужны: они бы дублировали запросы к X
+concurrency:
+  group: news
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Восстановить ключ сервисного аккаунта Google
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Собрать и отправить новости
+        env:
+          TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
+          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SHEETS_CREDENTIALS_PATH: ./credentials.json
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          TWEETS_PER_ACCOUNT: "10"
+          MIN_LIKES: "5000"
+          MAX_AGE_HOURS: "48"
+          MAX_POSTS_PER_RUN: "30"
+          ACCOUNTS_PER_BATCH: "10"
+          REQUEST_DELAY_SECONDS: "5"
+        run: python run_once.py
+
+      - name: Убрать ключ
+        if: always()
+        run: rm -f credentials.json
