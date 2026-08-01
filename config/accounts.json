@@ -9,12 +9,18 @@
   "DailyLoud",
   "Complex",
   "Variety",
+
   "MirrorCeleb",
   "OKMagazine",
   "Bossip",
   "HollywoodFix",
   "egotastic",
+  "FilmUpdates",
+  "MarvelStudios",
+  {"handle": "CultureCrave", "min_likes": 2000},
+  {"handle": "MyTimeToShineH", "min_likes": 800},
   "IGN",
+
   "screenrant",
   "DiscussingFilm",
   "TheFilmStage",
@@ -25,9 +31,9 @@
   "MTV",
   "Genius",
   "XXL",
+
   "RapUp",
   "ComplexMusic",
-
   {"handle": "soompi", "min_likes": 500},
   {"handle": "Kpop_Herald", "min_likes": 1500},
   {"handle": "XFashion", "min_likes": 1000},
